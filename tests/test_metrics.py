@@ -17,7 +17,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -201,12 +201,22 @@ class TestSafeRate:
     def test_one_to_one(self):
         assert _safe_rate(10.0, 10.0) == 1.0
 
-    def test_clamped_below_zero(self):
-        # Should not happen in practice but guard against floating-point edge cases
-        assert _safe_rate(0.0, 1.0) == 0.0
+    def test_zero_numerator(self):
+        assert _safe_rate(0.0, 10.0) == 0.0
 
     def test_integer_args(self):
         assert abs(_safe_rate(3, 6) - 0.5) < 1e-9
+
+    def test_large_values(self):
+        assert abs(_safe_rate(1000, 4000) - 0.25) < 1e-9
+
+    def test_result_clamped_to_one(self):
+        # Floating-point edge: numerator slightly > denominator
+        result = _safe_rate(1.0000001, 1.0)
+        assert result <= 1.0
+
+    def test_both_zero(self):
+        assert _safe_rate(0.0, 0.0) == 0.0
 
 
 class TestWhereClause:
@@ -220,6 +230,16 @@ class TestWhereClause:
     def test_multiple_clauses_joined_with_and(self):
         result = _where_clause(["a = ?", "b > ?"])
         assert result == "WHERE a = ? AND b > ?"
+
+    def test_three_clauses(self):
+        result = _where_clause(["x = ?", "y = ?", "z = ?"])
+        assert "WHERE" in result
+        assert "AND" in result
+        assert result.count("AND") == 2
+
+    def test_returns_string(self):
+        result = _where_clause(["a = ?"])
+        assert isinstance(result, str)
 
 
 class TestBuildFilters:
@@ -258,6 +278,17 @@ class TestBuildFilters:
         assert len(clauses) == 3
         assert len(params) == 3
 
+    def test_since_and_until_combined(self, app_ctx):
+        clauses, params = _build_filters("2024-01-01", "2024-12-31", None)
+        assert len(clauses) == 2
+        assert len(params) == 2
+
+    def test_provider_case_insensitive(self, app_ctx):
+        clauses_lower, params_lower = _build_filters(None, None, "claude")
+        clauses_upper, params_upper = _build_filters(None, None, "CLAUDE")
+        assert len(clauses_lower) == len(clauses_upper)
+        assert params_lower == params_upper
+
 
 class TestResolveManualEffort:
     def test_override_takes_priority(self, app_ctx):
@@ -276,6 +307,14 @@ class TestResolveManualEffort:
     def test_negative_clamped_to_zero(self, app_ctx):
         result = _resolve_manual_effort(-5.0)
         assert result == 0.0
+
+    def test_large_value(self, app_ctx):
+        result = _resolve_manual_effort(480.0)  # 8 hours
+        assert abs(result - 480.0) < 1e-9
+
+    def test_float_precision(self, app_ctx):
+        result = _resolve_manual_effort(22.5)
+        assert abs(result - 22.5) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +371,12 @@ class TestGetTokenSpend:
             assert "record_count" in entry
             assert entry["record_count"] > 0
 
+    def test_by_provider_has_display_name(self, app_ctx):
+        result = get_token_spend()
+        for entry in result["by_provider"]:
+            assert "display_name" in entry
+            assert entry["display_name"]
+
     def test_filter_by_provider(self, app_ctx):
         result = get_token_spend(provider="claude")
         assert len(result["by_provider"]) == 1
@@ -355,6 +400,28 @@ class TestGetTokenSpend:
         assert result["total_tokens"] == 0
         assert result["total_cost_usd"] == 0.0
         assert result["by_provider"] == []
+
+    def test_claude_tokens_correct(self, app_ctx):
+        result = get_token_spend(provider="claude")
+        # 150 + 280 + 80 + 80 = 590
+        claude_entry = result["by_provider"][0]
+        assert claude_entry["total_tokens"] == 590
+
+    def test_openai_tokens_correct(self, app_ctx):
+        result = get_token_spend(provider="openai")
+        # 400 + 140 + 80 = 620
+        openai_entry = result["by_provider"][0]
+        assert openai_entry["total_tokens"] == 620
+
+    def test_gemini_record_count(self, app_ctx):
+        result = get_token_spend(provider="gemini")
+        gemini_entry = result["by_provider"][0]
+        assert gemini_entry["record_count"] == 1
+
+    def test_by_provider_sorted_by_total_tokens_desc(self, app_ctx):
+        result = get_token_spend()
+        tokens = [entry["total_tokens"] for entry in result["by_provider"]]
+        assert tokens == sorted(tokens, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +469,11 @@ class TestGetTaskCompletionRates:
         result = get_task_completion_rates()
         assert abs(result["cancellation_rate"] - 1 / 8) < 1e-6
 
+    def test_rates_sum_to_one(self, app_ctx):
+        result = get_task_completion_rates()
+        total = result["success_rate"] + result["error_rate"] + result["cancellation_rate"]
+        assert abs(total - 1.0) < 1e-6
+
     def test_by_provider_length(self, app_ctx):
         result = get_task_completion_rates()
         assert len(result["by_provider"]) == 3
@@ -421,10 +493,38 @@ class TestGetTaskCompletionRates:
         result = get_task_completion_rates(provider="openai")
         assert abs(result["cancellation_rate"] - 1 / 3) < 1e-6
 
+    def test_gemini_all_success(self, app_ctx):
+        result = get_task_completion_rates(provider="gemini")
+        assert result["success_rate"] == 1.0
+        assert result["error_count"] == 0
+        assert result["cancelled_count"] == 0
+
     def test_no_data_returns_zeros(self, app_ctx):
         result = get_task_completion_rates(since="2099-01-01T00:00:00+00:00")
         assert result["total_tasks"] == 0
         assert result["success_rate"] == 0.0
+        assert result["error_rate"] == 0.0
+        assert result["cancellation_rate"] == 0.0
+        assert result["by_provider"] == []
+
+    def test_by_provider_has_required_keys(self, app_ctx):
+        result = get_task_completion_rates()
+        for entry in result["by_provider"]:
+            for key in ("provider", "display_name", "total_tasks",
+                        "success_count", "error_count", "cancelled_count",
+                        "success_rate", "error_rate", "cancellation_rate"):
+                assert key in entry
+
+    def test_filter_by_since(self, app_ctx):
+        result = get_task_completion_rates(since="2024-03-03T00:00:00+00:00")
+        # Only openai cancelled + gemini success on 2024-03-03
+        assert result["total_tasks"] == 2
+
+    def test_filter_by_until(self, app_ctx):
+        result = get_task_completion_rates(until="2024-03-01T23:59:59+00:00")
+        # 2 claude success + 1 openai success
+        assert result["total_tasks"] == 3
+        assert result["success_count"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +567,7 @@ class TestGetTimeSavedEstimates:
         assert result["successful_tasks"] == 6
 
     def test_total_ai_seconds(self, app_ctx):
-        # claude: 5+8+2=15 (error row excluded), openai: 10+4=14 (cancelled None excluded)
+        # claude success: 5+8+2=15, openai success: 10+4=14 (cancelled None excluded)
         # gemini: 6
         # Total = 15 + 14 + 6 = 35
         result = get_time_saved_estimates()
@@ -511,6 +611,38 @@ class TestGetTimeSavedEstimates:
         result = get_time_saved_estimates(since="2099-01-01T00:00:00+00:00")
         assert result["successful_tasks"] == 0
         assert result["time_saved_seconds"] == 0.0
+        assert result["total_ai_seconds"] == 0.0
+
+    def test_by_provider_has_required_keys(self, app_ctx):
+        result = get_time_saved_estimates()
+        for entry in result["by_provider"]:
+            for key in ("provider", "display_name", "successful_tasks",
+                        "total_ai_seconds", "total_manual_seconds",
+                        "time_saved_seconds", "time_saved_hours",
+                        "avg_ai_seconds_per_task"):
+                assert key in entry
+
+    def test_time_saved_cannot_be_negative(self, app_ctx):
+        # Even with a zero baseline, time_saved should be >= 0
+        result = get_time_saved_estimates(manual_effort_minutes_per_task=0.0)
+        assert result["time_saved_seconds"] >= 0.0
+
+    def test_avg_ai_seconds_per_task(self, app_ctx):
+        result = get_time_saved_estimates()
+        # 35 seconds / 6 tasks ≈ 5.833
+        expected_avg = 35.0 / 6
+        assert abs(result["avg_ai_seconds_per_task"] - expected_avg) < 0.01
+
+    def test_total_tasks_includes_all_statuses(self, app_ctx):
+        result = get_time_saved_estimates()
+        # total_tasks counts all records (8), successful_tasks counts only success (6)
+        assert result["total_tasks"] == 8
+        assert result["successful_tasks"] == 6
+
+    def test_large_baseline_increases_savings(self, app_ctx):
+        result_30 = get_time_saved_estimates(manual_effort_minutes_per_task=30.0)
+        result_60 = get_time_saved_estimates(manual_effort_minutes_per_task=60.0)
+        assert result_60["time_saved_seconds"] > result_30["time_saved_seconds"]
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +671,10 @@ class TestGetProviderConcentration:
         expected = 0.005 + 0.010 + 0.002 + 0.003 + 0.020 + 0.008 + 0.004 + 0.006
         result = get_provider_concentration()
         assert abs(result["total_cost_usd"] - expected) < 1e-6
+
+    def test_total_tokens(self, app_ctx):
+        result = get_provider_concentration()
+        assert result["total_tokens"] == 1390
 
     def test_total_tasks(self, app_ctx):
         result = get_provider_concentration()
@@ -575,9 +711,17 @@ class TestGetProviderConcentration:
         assert result["dominant_provider"] is None
         assert result["hhi_cost"] == 0.0
 
+    def test_no_data_zero_totals(self, app_ctx):
+        result = get_provider_concentration(
+            since="2099-01-01T00:00:00+00:00",
+        )
+        assert result["total_cost_usd"] == 0.0
+        assert result["total_tokens"] == 0
+        assert result["total_tasks"] == 0
+        assert result["by_provider"] == []
+
     def test_single_provider_concentration_warning(self, tmp_path):
         """When all tasks go to one provider, a warning should be generated."""
-        # Create a fresh app with only claude records to trigger 100% concentration
         app2 = create_app({
             "DATABASE": str(tmp_path / "conc_test.db"),
             "TESTING": True,
@@ -597,23 +741,9 @@ class TestGetProviderConcentration:
             ]
             insert_usage_logs_batch(records)
             result = get_provider_concentration()
-        # Claude should have 100% share → warning generated
         assert len(result["concentration_warnings"]) > 0
         warning_providers = {w["provider"] for w in result["concentration_warnings"]}
         assert "claude" in warning_providers
-
-    def test_no_warning_below_threshold(self, app_ctx):
-        """With balanced usage across 3 providers, no warnings should be raised."""
-        # Our seed data is reasonably balanced (no single provider >70% cost)
-        result = get_provider_concentration()
-        # OpenAI has the most cost (0.020+0.008+0.004=0.032 out of ~0.058)
-        # 0.032 / 0.058 ≈ 0.55 < 0.70 threshold
-        openai_entry = next(
-            (e for e in result["by_provider"] if e["provider"] == "openai"), None
-        )
-        if openai_entry:
-            # If no warning is triggered for openai, share is below threshold
-            pass  # Test passes if no exception raised above
 
     def test_by_provider_has_required_keys(self, app_ctx):
         result = get_provider_concentration()
@@ -622,6 +752,62 @@ class TestGetProviderConcentration:
                         "total_tokens", "task_count",
                         "cost_share", "token_share", "task_share"):
                 assert key in entry
+
+    def test_concentration_warnings_have_required_keys(self, tmp_path):
+        """Warning entries should have all expected keys."""
+        app2 = create_app({
+            "DATABASE": str(tmp_path / "warn_test.db"),
+            "TESTING": True,
+        })
+        wire_db(app2)
+        with app2.app_context():
+            claude_id = get_provider_id("claude")
+            records = [
+                {
+                    "provider_id": claude_id,
+                    "logged_at": f"2024-03-{i:02d}T10:00:00+00:00",
+                    "cost_usd": 0.01,
+                    "total_tokens": 100,
+                    "status": "success",
+                }
+                for i in range(1, 8)
+            ]
+            insert_usage_logs_batch(records)
+            result = get_provider_concentration()
+        for warning in result["concentration_warnings"]:
+            for key in ("provider", "display_name", "metric",
+                        "share", "threshold", "message"):
+                assert key in warning
+
+    def test_dominant_provider_has_highest_cost(self, app_ctx):
+        result = get_provider_concentration()
+        dominant = result["dominant_provider"]
+        # Find the entry with the highest cost
+        max_cost_entry = max(result["by_provider"], key=lambda e: e["cost_usd"])
+        assert dominant == max_cost_entry["provider"]
+
+    def test_hhi_is_one_for_monopoly(self, tmp_path):
+        """HHI should be 1.0 when a single provider has 100% cost share."""
+        app2 = create_app({
+            "DATABASE": str(tmp_path / "hhi_test.db"),
+            "TESTING": True,
+        })
+        wire_db(app2)
+        with app2.app_context():
+            claude_id = get_provider_id("claude")
+            records = [
+                {
+                    "provider_id": claude_id,
+                    "logged_at": f"2024-03-{i:02d}T10:00:00+00:00",
+                    "cost_usd": 0.01,
+                    "total_tokens": 100,
+                    "status": "success",
+                }
+                for i in range(1, 4)
+            ]
+            insert_usage_logs_batch(records)
+            result = get_provider_concentration()
+        assert abs(result["hhi_cost"] - 1.0) < 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +846,7 @@ class TestGetTaskTypeDistribution:
             (e for e in result["task_types"] if e["task_type"] == "code_generation"), None
         )
         assert code_gen is not None
-        # claude x3 + gemini x1 = 4 code_generation tasks
+        # claude x3 (2 success + 1 error) + gemini x1 = 4 code_generation tasks
         assert code_gen["count"] == 4
 
     def test_filter_by_provider(self, app_ctx):
@@ -668,6 +854,7 @@ class TestGetTaskTypeDistribution:
         types = {e["task_type"] for e in result["task_types"]}
         # OpenAI only has chat_completion in seed data
         assert "chat_completion" in types
+        assert "code_generation" not in types
 
     def test_each_entry_has_required_keys(self, app_ctx):
         result = get_task_type_distribution()
@@ -679,6 +866,27 @@ class TestGetTaskTypeDistribution:
         result = get_task_type_distribution(since="2099-01-01T00:00:00+00:00")
         assert result["total_tasks"] == 0
         assert result["task_types"] == []
+
+    def test_sorted_by_count_desc(self, app_ctx):
+        result = get_task_type_distribution()
+        counts = [e["count"] for e in result["task_types"]]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_filter_by_since(self, app_ctx):
+        result = get_task_type_distribution(since="2024-03-03T00:00:00+00:00")
+        # Only 2024-03-03 records: openai cancelled chat_completion, gemini code_generation
+        assert result["total_tasks"] == 2
+
+    def test_filter_by_until(self, app_ctx):
+        result = get_task_type_distribution(until="2024-03-01T23:59:59+00:00")
+        # 2 claude on 2024-03-01 + 1 openai on 2024-03-01
+        assert result["total_tasks"] == 3
+
+    def test_total_tokens_per_type_positive(self, app_ctx):
+        result = get_task_type_distribution()
+        for entry in result["task_types"]:
+            assert entry["total_tokens"] >= 0
+            assert entry["cost_usd"] >= 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +917,10 @@ class TestGetDailyUsageTrend:
         result = get_daily_usage_trend()
         assert result["days"][0]["date"] == "2024-03-01"
 
+    def test_last_day_date(self, app_ctx):
+        result = get_daily_usage_trend()
+        assert result["days"][-1]["date"] == "2024-03-03"
+
     def test_day_has_required_keys(self, app_ctx):
         result = get_daily_usage_trend()
         for day in result["days"]:
@@ -731,20 +943,46 @@ class TestGetDailyUsageTrend:
         # claude: 150+280=430, openai: 400 → 830
         assert march_01["total_tokens"] == 830
 
+    def test_march_02_success_and_error(self, app_ctx):
+        result = get_daily_usage_trend()
+        march_02 = next(d for d in result["days"] if d["date"] == "2024-03-02")
+        # claude: 1 success + 1 error, openai: 1 success
+        assert march_02["success_count"] == 2
+        assert march_02["error_count"] == 1
+
     def test_filter_by_since(self, app_ctx):
         result = get_daily_usage_trend(since="2024-03-03T00:00:00+00:00")
         assert result["total_days"] == 1
         assert result["days"][0]["date"] == "2024-03-03"
 
+    def test_filter_by_until(self, app_ctx):
+        result = get_daily_usage_trend(until="2024-03-01T23:59:59+00:00")
+        assert result["total_days"] == 1
+        assert result["days"][0]["date"] == "2024-03-01"
+
     def test_filter_by_provider(self, app_ctx):
         result = get_daily_usage_trend(provider="gemini")
         # Gemini only has 1 record on 2024-03-03
         assert result["total_days"] == 1
+        assert result["days"][0]["date"] == "2024-03-03"
 
     def test_no_data_returns_empty_days(self, app_ctx):
         result = get_daily_usage_trend(since="2099-01-01T00:00:00+00:00")
         assert result["days"] == []
         assert result["total_days"] == 0
+
+    def test_day_tokens_are_non_negative(self, app_ctx):
+        result = get_daily_usage_trend()
+        for day in result["days"]:
+            assert day["total_tokens"] >= 0
+            assert day["prompt_tokens"] >= 0
+            assert day["completion_tokens"] >= 0
+            assert day["cost_usd"] >= 0.0
+
+    def test_total_tokens_across_all_days(self, app_ctx):
+        result = get_daily_usage_trend()
+        total = sum(d["total_tokens"] for d in result["days"])
+        assert total == 1390
 
 
 # ---------------------------------------------------------------------------
@@ -795,12 +1033,50 @@ class TestGetProviderDailyTrend:
         assert gemini_series is not None
         assert len(gemini_series["days"]) == 1
 
+    def test_openai_series_has_three_days(self, app_ctx):
+        result = get_provider_daily_trend()
+        openai_series = next(
+            (s for s in result["series"] if s["provider"] == "openai"), None
+        )
+        assert openai_series is not None
+        # OpenAI has records on 2024-03-01, 2024-03-02, 2024-03-03
+        assert len(openai_series["days"]) == 3
+
     def test_no_data_returns_empty_series(self, app_ctx):
         result = get_provider_daily_trend(
             since="2099-01-01T00:00:00+00:00",
             until="2099-12-31T23:59:59+00:00",
         )
         assert result["series"] == []
+
+    def test_filter_by_since(self, app_ctx):
+        result = get_provider_daily_trend(since="2024-03-03T00:00:00+00:00")
+        # Only openai and gemini have records on 2024-03-03
+        provider_names = {s["provider"] for s in result["series"]}
+        assert "claude" not in provider_names
+        assert "openai" in provider_names
+        assert "gemini" in provider_names
+
+    def test_days_ordered_ascending_per_series(self, app_ctx):
+        result = get_provider_daily_trend()
+        for series in result["series"]:
+            dates = [d["date"] for d in series["days"]]
+            assert dates == sorted(dates)
+
+    def test_provider_names_in_series(self, app_ctx):
+        result = get_provider_daily_trend()
+        names = {s["provider"] for s in result["series"]}
+        assert "claude" in names
+        assert "openai" in names
+        assert "gemini" in names
+
+    def test_claude_day_march_01_tokens(self, app_ctx):
+        result = get_provider_daily_trend()
+        claude_series = next(s for s in result["series"] if s["provider"] == "claude")
+        march_01 = next((d for d in claude_series["days"] if d["date"] == "2024-03-01"), None)
+        assert march_01 is not None
+        # claude 2024-03-01: 150 + 280 = 430 tokens
+        assert march_01["total_tokens"] == 430
 
 
 # ---------------------------------------------------------------------------
@@ -850,6 +1126,32 @@ class TestGetModelUsage:
         assert result["models"] == []
         assert result["total_tasks"] == 0
 
+    def test_sorted_by_task_count_desc(self, app_ctx):
+        result = get_model_usage()
+        counts = [m["task_count"] for m in result["models"]]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_claude_sonnet_task_count(self, app_ctx):
+        result = get_model_usage(provider="claude")
+        sonnet = next(
+            (m for m in result["models"] if m["model"] == "claude-3-5-sonnet-20241022"),
+            None,
+        )
+        assert sonnet is not None
+        # 3 claude-3-5-sonnet records (2024-03-01 x2, 2024-03-02 x1 error)
+        assert sonnet["task_count"] == 3
+
+    def test_filter_by_since(self, app_ctx):
+        result = get_model_usage(since="2024-03-03T00:00:00+00:00")
+        # Only records from 2024-03-03: gpt-4o (cancelled) + gemini-1.5-pro (success)
+        assert result["total_tasks"] == 2
+
+    def test_cost_non_negative(self, app_ctx):
+        result = get_model_usage()
+        for model in result["models"]:
+            assert model["cost_usd"] >= 0.0
+            assert model["total_tokens"] >= 0
+
 
 # ---------------------------------------------------------------------------
 # get_recent_activity
@@ -868,6 +1170,7 @@ class TestGetRecentActivity:
         # Our seed has 8 records, so all should be returned
         result = get_recent_activity()
         assert len(result) <= 20
+        assert len(result) == 8
 
     def test_custom_limit(self, app_ctx):
         result = get_recent_activity(limit=3)
@@ -897,6 +1200,11 @@ class TestGetRecentActivity:
         for record in result:
             assert record["logged_at"] >= "2024-03-03"
 
+    def test_filter_by_until(self, app_ctx):
+        result = get_recent_activity(until="2024-03-01T23:59:59+00:00")
+        for record in result:
+            assert record["logged_at"] <= "2024-03-01T23:59:59+00:00"
+
     def test_no_data_returns_empty_list(self, app_ctx):
         result = get_recent_activity(since="2099-01-01T00:00:00+00:00")
         assert result == []
@@ -912,6 +1220,29 @@ class TestGetRecentActivity:
             "provider_name", "provider_display_name",
         ):
             assert key in record
+
+    def test_limit_1_returns_most_recent(self, app_ctx):
+        result = get_recent_activity(limit=1)
+        assert len(result) == 1
+        # Most recent in seed data is 2024-03-03T15:00:00+00:00 (gemini)
+        assert result[0]["provider_name"] == "gemini"
+
+    def test_returns_plain_dicts(self, app_ctx):
+        result = get_recent_activity()
+        for item in result:
+            assert isinstance(item, dict)
+
+    def test_claude_records_returned(self, app_ctx):
+        result = get_recent_activity(provider="claude")
+        assert len(result) == 4  # 4 claude records in seed
+        for record in result:
+            assert record["provider_name"] == "claude"
+
+    def test_status_values_valid(self, app_ctx):
+        result = get_recent_activity()
+        valid_statuses = {"success", "error", "cancelled"}
+        for record in result:
+            assert record["status"] in valid_statuses
 
 
 # ---------------------------------------------------------------------------
@@ -941,6 +1272,13 @@ class TestGetSummaryStats:
         result = get_summary_stats()
         assert "T" in result["generated_at"]
         assert "+00:00" in result["generated_at"]
+
+    def test_generated_at_is_recent(self, app_ctx):
+        before = datetime.now(tz=timezone.utc)
+        result = get_summary_stats()
+        after = datetime.now(tz=timezone.utc)
+        generated = datetime.fromisoformat(result["generated_at"])
+        assert before <= generated <= after
 
     def test_filters_reflected(self, app_ctx):
         result = get_summary_stats(
@@ -976,6 +1314,37 @@ class TestGetSummaryStats:
         assert result["token_spend"]["total_tokens"] == 0
         assert result["completion_rates"]["total_tasks"] == 0
 
+    def test_provider_filter_scopes_results(self, app_ctx):
+        result = get_summary_stats(provider="gemini")
+        # Only 1 gemini record
+        assert result["completion_rates"]["total_tasks"] == 1
+        assert result["token_spend"]["total_tokens"] == 180
+
+    def test_since_filter_scopes_results(self, app_ctx):
+        result = get_summary_stats(since="2024-03-03T00:00:00+00:00")
+        # 2024-03-03: openai cancelled + gemini success
+        assert result["completion_rates"]["total_tasks"] == 2
+
+    def test_until_filter_scopes_results(self, app_ctx):
+        result = get_summary_stats(until="2024-03-01T23:59:59+00:00")
+        # 2024-03-01: 2 claude + 1 openai
+        assert result["completion_rates"]["total_tasks"] == 3
+
+    def test_concentration_is_dict(self, app_ctx):
+        result = get_summary_stats()
+        assert isinstance(result["concentration"], dict)
+        assert "hhi_cost" in result["concentration"]
+
+    def test_daily_trend_has_days_list(self, app_ctx):
+        result = get_summary_stats()
+        assert isinstance(result["daily_trend"]["days"], list)
+        assert len(result["daily_trend"]["days"]) == 3
+
+    def test_task_distribution_has_task_types(self, app_ctx):
+        result = get_summary_stats()
+        assert isinstance(result["task_distribution"]["task_types"], list)
+        assert len(result["task_distribution"]["task_types"]) > 0
+
 
 # ---------------------------------------------------------------------------
 # get_providers_list
@@ -1003,3 +1372,43 @@ class TestGetProvidersList:
         result = get_providers_list()
         for item in result:
             assert isinstance(item, dict)
+
+    def test_at_least_three_providers(self, app_ctx):
+        result = get_providers_list()
+        assert len(result) >= 3
+
+    def test_display_names_non_empty(self, app_ctx):
+        result = get_providers_list()
+        for provider in result:
+            assert provider["display_name"]
+            assert len(provider["display_name"]) > 0
+
+    def test_ids_are_integers(self, app_ctx):
+        result = get_providers_list()
+        for provider in result:
+            assert isinstance(provider["id"], int)
+            assert provider["id"] > 0
+
+    def test_created_at_is_string(self, app_ctx):
+        result = get_providers_list()
+        for provider in result:
+            assert isinstance(provider["created_at"], str)
+            assert "T" in provider["created_at"]
+
+    def test_claude_display_name(self, app_ctx):
+        result = get_providers_list()
+        claude = next((p for p in result if p["name"] == "claude"), None)
+        assert claude is not None
+        assert "Claude" in claude["display_name"]
+
+    def test_openai_display_name(self, app_ctx):
+        result = get_providers_list()
+        openai = next((p for p in result if p["name"] == "openai"), None)
+        assert openai is not None
+        assert "OpenAI" in openai["display_name"]
+
+    def test_gemini_display_name(self, app_ctx):
+        result = get_providers_list()
+        gemini = next((p for p in result if p["name"] == "gemini"), None)
+        assert gemini is not None
+        assert "Gemini" in gemini["display_name"]

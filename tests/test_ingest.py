@@ -66,7 +66,7 @@ def app(tmp_path):
 
 
 @pytest.fixture()
- def app_ctx(app):
+def app_ctx(app):
     """Active application context."""
     with app.app_context():
         yield app
@@ -233,6 +233,18 @@ class TestUnwrapJsonRecords:
     def test_empty_list(self):
         assert _unwrap_json_records([]) == []
 
+    def test_unwraps_records_key(self):
+        payload = {"records": [{"z": 3}]}
+        assert _unwrap_json_records(payload) == [{"z": 3}]
+
+    def test_unwraps_results_key(self):
+        payload = {"results": [{"w": 5}]}
+        assert _unwrap_json_records(payload) == [{"w": 5}]
+
+    def test_unwraps_usage_key(self):
+        payload = {"usage": [{"u": 1}]}
+        assert _unwrap_json_records(payload) == [{"u": 1}]
+
 
 # ---------------------------------------------------------------------------
 # Claude normalizer
@@ -276,6 +288,11 @@ class TestNormalizeClaudeRecord:
         result = normalize_claude_record(raw, claude_provider_id)
         assert result["status"] == "error"
 
+    def test_stop_reason_cancelled(self, claude_provider_id):
+        raw = {"stop_reason": "cancelled", "input_tokens": 0, "output_tokens": 0}
+        result = normalize_claude_record(raw, claude_provider_id)
+        assert result["status"] == "cancelled"
+
     def test_missing_timestamp_defaults_to_now(self, claude_provider_id):
         raw = {"input_tokens": 10, "output_tokens": 5}
         result = normalize_claude_record(raw, claude_provider_id)
@@ -285,6 +302,32 @@ class TestNormalizeClaudeRecord:
         raw = make_claude_csv_row(extra_field="sentinel_value")
         result = normalize_claude_record(raw, claude_provider_id)
         assert result["raw_payload"]["extra_field"] == "sentinel_value"
+
+    def test_total_tokens_auto_computed(self, claude_provider_id):
+        raw = {"input_tokens": 30, "output_tokens": 70}
+        result = normalize_claude_record(raw, claude_provider_id)
+        assert result["total_tokens"] == 100
+
+    def test_explicit_total_tokens_preserved(self, claude_provider_id):
+        raw = {"input_tokens": 30, "output_tokens": 70, "total_tokens": 110}
+        result = normalize_claude_record(raw, claude_provider_id)
+        assert result["total_tokens"] == 110
+
+    def test_cost_aliases(self, claude_provider_id):
+        raw = {"cost": 0.123, "input_tokens": 5, "output_tokens": 5}
+        result = normalize_claude_record(raw, claude_provider_id)
+        assert abs(result["cost_usd"] - 0.123) < 1e-9
+
+    def test_request_id_alias(self, claude_provider_id):
+        raw = {"request_id": "req-999", "input_tokens": 5, "output_tokens": 5}
+        result = normalize_claude_record(raw, claude_provider_id)
+        assert result["external_id"] == "req-999"
+
+    def test_latency_ms_field(self, claude_provider_id):
+        raw = {"latency_ms": 5000, "input_tokens": 5, "output_tokens": 5}
+        result = normalize_claude_record(raw, claude_provider_id)
+        assert result["duration_seconds"] is not None
+        assert abs(result["duration_seconds"] - 5.0) < 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +382,42 @@ class TestNormalizeOpenAIRecord:
         result = normalize_openai_record(raw, openai_provider_id)
         assert result["status"] == "cancelled"
 
+    def test_stop_status_success(self, openai_provider_id):
+        raw = {"finish_reason": "stop", "prompt_tokens": 10, "completion_tokens": 5}
+        result = normalize_openai_record(raw, openai_provider_id)
+        assert result["status"] == "success"
+
+    def test_length_finish_reason_success(self, openai_provider_id):
+        raw = {"finish_reason": "length", "prompt_tokens": 10, "completion_tokens": 5}
+        result = normalize_openai_record(raw, openai_provider_id)
+        assert result["status"] == "success"
+
+    def test_tool_calls_finish_reason_success(self, openai_provider_id):
+        raw = {"finish_reason": "tool_calls", "prompt_tokens": 10, "completion_tokens": 5}
+        result = normalize_openai_record(raw, openai_provider_id)
+        assert result["status"] == "success"
+
+    def test_raw_payload_preserved(self, openai_provider_id):
+        raw = make_openai_csv_row(custom_field="sentinel")
+        result = normalize_openai_record(raw, openai_provider_id)
+        assert result["raw_payload"]["custom_field"] == "sentinel"
+
+    def test_missing_timestamp_defaults(self, openai_provider_id):
+        raw = {"prompt_tokens": 5, "completion_tokens": 5}
+        result = normalize_openai_record(raw, openai_provider_id)
+        assert "T" in result["logged_at"]
+
+    def test_nested_usage_overrides_flat(self, openai_provider_id):
+        """Nested usage object should take priority for token counts."""
+        raw = {
+            "prompt_tokens": 999,
+            "completion_tokens": 999,
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        result = normalize_openai_record(raw, openai_provider_id)
+        assert result["prompt_tokens"] == 10
+        assert result["completion_tokens"] == 5
+
 
 # ---------------------------------------------------------------------------
 # Gemini normalizer
@@ -384,6 +463,40 @@ class TestNormalizeGeminiRecord:
         result = normalize_gemini_record(raw, gemini_provider_id)
         assert result["status"] == "error"
 
+    def test_recitation_status_error(self, gemini_provider_id):
+        raw = {"finish_reason": "RECITATION", "prompt_token_count": 10, "candidates_token_count": 0}
+        result = normalize_gemini_record(raw, gemini_provider_id)
+        assert result["status"] == "error"
+
+    def test_unspecified_status_cancelled(self, gemini_provider_id):
+        raw = {"finish_reason": "UNSPECIFIED", "prompt_token_count": 5, "candidates_token_count": 0}
+        result = normalize_gemini_record(raw, gemini_provider_id)
+        assert result["status"] == "cancelled"
+
+    def test_create_time_field(self, gemini_provider_id):
+        raw = {
+            "create_time": "2024-03-01T10:00:00+00:00",
+            "prompt_token_count": 10,
+            "candidates_token_count": 5,
+        }
+        result = normalize_gemini_record(raw, gemini_provider_id)
+        assert "2024-03-01" in result["logged_at"]
+
+    def test_model_version_alias(self, gemini_provider_id):
+        raw = {"model_version": "gemini-pro-exp", "prompt_token_count": 5, "candidates_token_count": 5}
+        result = normalize_gemini_record(raw, gemini_provider_id)
+        assert result["model"] == "gemini-pro-exp"
+
+    def test_raw_payload_preserved(self, gemini_provider_id):
+        raw = make_gemini_csv_row(extra_key="test_value")
+        result = normalize_gemini_record(raw, gemini_provider_id)
+        assert result["raw_payload"]["extra_key"] == "test_value"
+
+    def test_total_tokens_auto_computed(self, gemini_provider_id):
+        raw = {"prompt_token_count": 40, "candidates_token_count": 60}
+        result = normalize_gemini_record(raw, gemini_provider_id)
+        assert result["total_tokens"] == 100
+
 
 # ---------------------------------------------------------------------------
 # CSV ingestion (integration)
@@ -412,7 +525,7 @@ class TestIngestCsv:
         rows = [make_claude_csv_row()]
         csv_bytes = csv_from_rows(rows)
         # No explicit provider – should detect Claude from columns
-        count = ingest_csv(csv_bytes)  # auto-detect
+        count = ingest_csv(csv_bytes)
         assert count == 1
 
     def test_autodetect_openai_provider(self, app_ctx):
@@ -434,7 +547,6 @@ class TestIngestCsv:
 
     def test_malformed_csv_raises(self, app_ctx):
         with pytest.raises(MalformedLogError):
-            # Pass something that will fail pd.read_csv entirely
             ingest_csv(b"\x00" * 10)
 
     def test_empty_csv_returns_zero(self, app_ctx):
@@ -459,6 +571,15 @@ class TestIngestCsv:
         ingest_csv(csv_bytes, provider=PROVIDER_CLAUDE)
         after = count_usage_logs(provider_id=provider_id)
         assert after == before + 2
+
+    def test_multiple_rows_all_inserted(self, app_ctx):
+        rows = [
+            make_claude_csv_row(id=f"req_{i}", input_tokens=i * 10)
+            for i in range(1, 6)
+        ]
+        csv_bytes = csv_from_rows(rows)
+        count = ingest_csv(csv_bytes, provider=PROVIDER_CLAUDE)
+        assert count == 5
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +662,24 @@ class TestIngestJson:
         with pytest.raises(UnknownProviderError):
             ingest_json(json_bytes)
 
+    def test_ingest_logs_key(self, app_ctx):
+        payload = {"logs": [make_claude_csv_row()]}
+        json_bytes = json.dumps(payload).encode()
+        count = ingest_json(json_bytes, provider=PROVIDER_CLAUDE)
+        assert count == 1
+
+    def test_ingest_records_key(self, app_ctx):
+        payload = {"records": [make_openai_csv_row()]}
+        json_bytes = json.dumps(payload).encode()
+        count = ingest_json(json_bytes, provider=PROVIDER_OPENAI)
+        assert count == 1
+
+    def test_bytes_decoded_correctly(self, app_ctx):
+        records = [make_claude_csv_row()]
+        json_bytes = json.dumps(records).encode("utf-8")
+        count = ingest_json(json_bytes, provider=PROVIDER_CLAUDE)
+        assert count == 1
+
 
 # ---------------------------------------------------------------------------
 # ingest_file (integration)
@@ -580,6 +719,33 @@ class TestIngestFile:
         count = ingest_file(p, provider=PROVIDER_CLAUDE, file_format="json")
         assert count == 1
 
+    def test_csv_autodetect_gemini(self, app_ctx, tmp_path):
+        rows = [make_gemini_csv_row()]
+        csv_path = tmp_path / "gemini_log.csv"
+        csv_path.write_bytes(csv_from_rows(rows))
+        count = ingest_file(csv_path)  # auto-detect provider
+        assert count == 1
+
+    def test_json_autodetect_openai(self, app_ctx, tmp_path):
+        records = [make_openai_csv_row()]
+        json_path = tmp_path / "openai_log.json"
+        json_path.write_bytes(json.dumps(records).encode())
+        count = ingest_file(json_path)  # auto-detect provider
+        assert count == 1
+
+    def test_string_path_accepted(self, app_ctx, tmp_path):
+        rows = [make_claude_csv_row()]
+        csv_path = tmp_path / "str_path.csv"
+        csv_path.write_bytes(csv_from_rows(rows))
+        count = ingest_file(str(csv_path), provider=PROVIDER_CLAUDE)
+        assert count == 1
+
+    def test_unsupported_format_override_raises(self, app_ctx, tmp_path):
+        p = tmp_path / "data.csv"
+        p.write_bytes(csv_from_rows([make_claude_csv_row()]))
+        with pytest.raises(MalformedLogError):
+            ingest_file(p, provider=PROVIDER_CLAUDE, file_format="xml")
+
 
 # ---------------------------------------------------------------------------
 # ingest_records
@@ -608,6 +774,24 @@ class TestIngestRecords:
     def test_empty_records_returns_zero(self, app_ctx):
         count = ingest_records([], PROVIDER_CLAUDE)
         assert count == 0
+
+    def test_multiple_records_inserted(self, app_ctx):
+        records = [
+            {"input_tokens": i * 10, "output_tokens": i * 5}
+            for i in range(1, 4)
+        ]
+        count = ingest_records(records, PROVIDER_CLAUDE)
+        assert count == 3
+
+    def test_provider_case_insensitive(self, app_ctx):
+        records = [{"input_tokens": 10, "output_tokens": 5}]
+        count = ingest_records(records, "CLAUDE")
+        assert count == 1
+
+    def test_provider_openai_uppercase(self, app_ctx):
+        records = [make_openai_csv_row()]
+        count = ingest_records(records, "OPENAI")
+        assert count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +843,18 @@ class TestParseTimestamp:
         result = _parse_timestamp("2024-03-01T10:00:00")
         assert "+00:00" in result
 
+    def test_datetime_with_microseconds(self):
+        result = _parse_timestamp("2024-03-01T10:00:00.123456+00:00")
+        assert "2024-03-01" in result
+
+    def test_slash_date_format(self):
+        result = _parse_timestamp("03/01/2024")
+        assert "2024" in result
+
+    def test_space_separated_datetime(self):
+        result = _parse_timestamp("2024-03-01 10:00:00")
+        assert "2024-03-01" in result
+
 
 # ---------------------------------------------------------------------------
 # Duration parsing
@@ -686,12 +882,22 @@ class TestParseDuration:
     def test_zero(self):
         assert _parse_duration(0) == 0.0
 
+    def test_float_string_ms(self):
+        assert abs(_parse_duration("2500.0", is_ms=True) - 2.5) < 1e-9
+
+    def test_large_value(self):
+        assert _parse_duration(3600) == 3600.0
+
+    def test_is_ms_false_no_conversion(self):
+        assert _parse_duration(5.0, is_ms=False) == 5.0
+
 
 # ---------------------------------------------------------------------------
 # Type coercion helpers
 # ---------------------------------------------------------------------------
 
 class TestCoerceHelpers:
+    # _coerce_str
     def test_coerce_str_none(self):
         assert _coerce_str(None) is None
 
@@ -710,6 +916,10 @@ class TestCoerceHelpers:
     def test_coerce_str_int(self):
         assert _coerce_str(42) == "42"
 
+    def test_coerce_str_float(self):
+        assert _coerce_str(3.14) == "3.14"
+
+    # _coerce_int
     def test_coerce_int_none(self):
         assert _coerce_int(None) == 0
 
@@ -722,6 +932,16 @@ class TestCoerceHelpers:
     def test_coerce_int_invalid(self):
         assert _coerce_int("abc") == 0
 
+    def test_coerce_int_float(self):
+        assert _coerce_int(9.9) == 9
+
+    def test_coerce_int_zero_string(self):
+        assert _coerce_int("0") == 0
+
+    def test_coerce_int_negative(self):
+        assert _coerce_int(-5) == -5
+
+    # _coerce_float
     def test_coerce_float_none(self):
         assert _coerce_float(None) == 0.0
 
@@ -734,6 +954,15 @@ class TestCoerceHelpers:
     def test_coerce_float_invalid(self):
         assert _coerce_float("not_a_float") == 0.0
 
+    def test_coerce_float_int(self):
+        assert _coerce_float(5) == 5.0
+
+    def test_coerce_float_zero(self):
+        assert _coerce_float(0) == 0.0
+
+    def test_coerce_float_negative(self):
+        assert abs(_coerce_float(-1.5) - (-1.5)) < 1e-9
+
 
 # ---------------------------------------------------------------------------
 # Status normalization
@@ -745,12 +974,17 @@ class TestNormalizeStatusClaude:
         ("stop_sequence", "success"),
         ("max_tokens", "success"),
         ("success", "success"),
+        ("complete", "success"),
+        ("completed", "success"),
         ("error", "error"),
         ("failed", "error"),
+        ("failure", "error"),
         ("cancelled", "cancelled"),
+        ("canceled", "cancelled"),
         ("timeout", "cancelled"),
         (None, "success"),
         ("tool_use", "success"),  # unknown defaults to success
+        ("END_TURN", "success"),  # case-insensitive
     ])
     def test_mapping(self, raw, expected):
         assert _normalize_status_claude(raw) == expected
@@ -762,10 +996,17 @@ class TestNormalizeStatusOpenAI:
         ("length", "success"),
         ("tool_calls", "success"),
         ("function_call", "success"),
+        ("complete", "success"),
+        ("completed", "success"),
         ("content_filter", "error"),
         ("error", "error"),
+        ("failed", "error"),
+        ("failure", "error"),
         ("cancelled", "cancelled"),
+        ("canceled", "cancelled"),
+        ("timeout", "cancelled"),
         (None, "success"),
+        ("STOP", "success"),  # case-insensitive
     ])
     def test_mapping(self, raw, expected):
         assert _normalize_status_openai(raw) == expected
@@ -776,11 +1017,22 @@ class TestNormalizeStatusGemini:
         ("STOP", "success"),
         ("stop", "success"),
         ("1", "success"),
+        ("finish_reason_stop", "success"),
+        ("max_tokens", "success"),
+        ("complete", "success"),
+        ("completed", "success"),
         ("SAFETY", "error"),
+        ("safety", "error"),
         ("RECITATION", "error"),
+        ("recitation", "error"),
         ("OTHER", "error"),
+        ("other", "error"),
+        ("error", "error"),
+        ("failed", "error"),
         ("UNSPECIFIED", "cancelled"),
+        ("unspecified", "cancelled"),
         ("0", "cancelled"),
+        ("finish_reason_unspecified", "cancelled"),
         (None, "success"),
     ])
     def test_mapping(self, raw, expected):
