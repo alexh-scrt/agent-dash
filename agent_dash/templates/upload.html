@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Import Logs &ndash; agent_dash</title>
+  <style>
+    /* ------------------------------------------------------------------ */
+    /* Shared tokens (must match index.html)                               */
+    /* ------------------------------------------------------------------ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0f1117;
+      --surface:    #1a1d27;
+      --surface-2:  #232635;
+      --border:     #2e3149;
+      --text:       #e2e4f0;
+      --text-muted: #8890b5;
+      --accent:     #6c7ff8;
+      --green:      #34d399;
+      --red:        #f87171;
+      --yellow:     #fbbf24;
+      --radius:     10px;
+      --shadow:     0 2px 12px rgba(0,0,0,.45);
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ------------------------------------------------------------------ */
+    /* Header                                                               */
+    /* ------------------------------------------------------------------ */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      height: 56px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-logo {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.5px;
+    }
+    .header-logo span { color: var(--text-muted); font-weight: 400; }
+    .header-nav { display: flex; gap: 6px; margin-left: auto; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+      text-decoration: none;
+    }
+    .btn:hover { background: var(--border); }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: #5770f0; border-color: #5770f0; }
+    .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+
+    /* ------------------------------------------------------------------ */
+    /* Main layout                                                          */
+    /* ------------------------------------------------------------------ */
+    .main {
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+
+    .page-title {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+    .page-subtitle {
+      color: var(--text-muted);
+      margin-bottom: 28px;
+    }
+
+    /* Flash messages */
+    .flash-list { list-style: none; margin-bottom: 20px; display: flex; flex-direction: column; gap: 8px; }
+    .flash-msg {
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .flash-msg.success { background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.3); color: var(--green); }
+    .flash-msg.error   { background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); color: var(--red); }
+    .flash-msg.warning { background: rgba(251,191,36,.12);  border: 1px solid rgba(251,191,36,.3);  color: var(--yellow); }
+
+    /* ------------------------------------------------------------------ */
+    /* Upload card                                                          */
+    /* ------------------------------------------------------------------ */
+    .upload-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+    }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 36px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+      margin-bottom: 24px;
+    }
+    .drop-zone:hover,
+    .drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(108,127,248,.05);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+    .drop-icon {
+      font-size: 36px;
+      margin-bottom: 12px;
+      display: block;
+    }
+    .drop-label {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .drop-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .file-selected {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* Form fields */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 540px) {
+      .form-grid { grid-template-columns: 1fr; }
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .form-group label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--text-muted);
+    }
+    .form-group select,
+    .form-group input {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 8px 12px;
+      font-size: 13px;
+      width: 100%;
+    }
+    .form-group select:focus,
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .form-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* Submit row */
+    .form-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .upload-progress {
+      display: none;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .upload-progress.visible { display: block; }
+
+    /* ------------------------------------------------------------------ */
+    /* Schema reference                                                     */
+    /* ------------------------------------------------------------------ */
+    .schema-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px 28px;
+      margin-bottom: 24px;
+    }
+    .schema-card h3 {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: var(--text);
+    }
+    .schema-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 16px;
+    }
+    .schema-tab {
+      padding: 5px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text-muted);
+      transition: background .15s;
+      user-select: none;
+    }
+    .schema-tab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .schema-content { display: none; }
+    .schema-content.active { display: block; }
+
+    pre {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-family: 'Fira Code', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      color: var(--text-muted);
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .field-name { color: var(--accent); }
+    .field-type { color: var(--green); }
+    .field-note { color: var(--text-muted); }
+
+    /* ------------------------------------------------------------------ */
+    /* Footer                                                               */
+    /* ------------------------------------------------------------------ */
+    .footer {
+      text-align: center;
+      padding: 18px;
+      font-size: 12px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-logo"><a href="{{ url_for('index') }}" style="color:inherit;text-decoration:none;">agent<span>_dash</span></a></div>
+    <nav class="header-nav">
+      <a href="{{ url_for('index') }}" class="btn">&#9636; Dashboard</a>
+    </nav>
+  </header>
+
+  <main class="main">
+    <h1 class="page-title">Import Usage Logs</h1>
+    <p class="page-subtitle">
+      Upload CSV or JSON log exports from Claude, OpenAI, or Gemini.
+      Provider detection is automatic when fields match known schemas.
+    </p>
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flash-list">
+          {% for category, message in messages %}
+            <li class="flash-msg {{ category }}">{{ message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <!-- ============================================================ -->
+    <!-- Upload form                                                   -->
+    <!-- ============================================================ -->
+    <div class="upload-card">
+      <form
+        id="upload-form"
+        method="POST"
+        action="{{ url_for('upload') }}"
+        enctype="multipart/form-data"
+      >
+        <!-- Drop zone -->
+        <div class="drop-zone" id="drop-zone">
+          <input
+            type="file"
+            id="file-input"
+            name="file"
+            accept=".csv,.json"
+            required
+          />
+          <span class="drop-icon">&#128190;</span>
+          <div class="drop-label">Drag &amp; drop a file here</div>
+          <div class="drop-hint">or click to browse &mdash; CSV and JSON accepted (max 16 MB)</div>
+          <div class="file-selected" id="file-selected-label"></div>
+        </div>
+
+        <!-- Options -->
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="provider">Provider Override</label>
+            <select id="provider" name="provider">
+              <option value="">Auto-detect (recommended)</option>
+              <option value="claude">Anthropic Claude</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+            <span class="form-hint">
+              Leave as auto-detect unless detection fails for your export format.
+            </span>
+          </div>
+          <div class="form-group">
+            <label>File requirements</label>
+            <div style="font-size:12px;color:var(--text-muted);line-height:1.8;">
+              &bull; CSV with header row<br />
+              &bull; JSON array <code>[{&hellip;}]</code> or wrapped object<br />
+              &bull; UTF-8 encoding<br />
+              &bull; Max 16 MB per file
+            </div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="submit-btn">
+            &#8593; Import File
+          </button>
+          <span class="upload-progress" id="upload-progress">
+            Uploading and processing&hellip;
+          </span>
+        </div>
+      </form>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Schema reference                                              -->
+    <!-- ============================================================ -->
+    <div class="schema-card">
+      <h3>Expected Column / Field Reference</h3>
+
+      <div class="schema-tabs">
+        <div class="schema-tab active" data-tab="claude">Claude (CSV)</div>
+        <div class="schema-tab" data-tab="openai">OpenAI (CSV / JSON)</div>
+        <div class="schema-tab" data-tab="gemini">Gemini (CSV / JSON)</div>
+        <div class="schema-tab" data-tab="json">Generic JSON</div>
+      </div>
+
+      <!-- Claude -->
+      <div class="schema-content active" id="tab-claude">
+        <pre><span class="field-name">id</span>                  <span class="field-type">string</span>   <span class="field-note"># request identifier (optional)</span>
+<span class="field-name">created_at</span>          <span class="field-type">datetime</span> <span class="field-note"># ISO-8601 or Unix timestamp</span>
+<span class="field-name">model</span>               <span class="field-type">string</span>   <span class="field-note"># e.g. claude-3-5-sonnet-20241022</span>
+<span class="field-name">anthropic_model</span>     <span class="field-type">string</span>   <span class="field-note"># alias for model</span>
+<span class="field-name">task_type</span>           <span class="field-type">string</span>   <span class="field-note"># e.g. code_generation</span>
+<span class="field-name">input_tokens</span>        <span class="field-type">integer</span>  <span class="field-note"># prompt token count</span>
+<span class="field-name">output_tokens</span>       <span class="field-type">integer</span>  <span class="field-note"># completion token count</span>
+<span class="field-name">total_tokens</span>        <span class="field-type">integer</span>  <span class="field-note"># auto-computed if absent</span>
+<span class="field-name">cost_usd</span>            <span class="field-type">float</span>    <span class="field-note"># estimated cost in USD</span>
+<span class="field-name">duration_seconds</span>    <span class="field-type">float</span>    <span class="field-note"># wall-clock seconds</span>
+<span class="field-name">duration_ms</span>         <span class="field-type">float</span>    <span class="field-note"># milliseconds (auto-converted)</span>
+<span class="field-name">stop_reason</span>         <span class="field-type">string</span>   <span class="field-note"># end_turn | error | cancelled</span></pre>
+      </div>
+
+      <!-- OpenAI -->
+      <div class="schema-content" id="tab-openai">
+        <pre><span class="field-name">id</span>                  <span class="field-type">string</span>   <span class="field-note"># e.g. chatcmpl-...</span>
+<span class="field-name">created</span>             <span class="field-type">integer</span>  <span class="field-note"># Unix timestamp (API format)</span>
+<span class="field-name">created_at</span>          <span class="field-type">datetime</span> <span class="field-note"># ISO-8601 alternative</span>
+<span class="field-name">model</span>               <span class="field-type">string</span>   <span class="field-note"># e.g. gpt-4o</span>
+<span class="field-name">object</span>              <span class="field-type">string</span>   <span class="field-note"># e.g. chat.completion</span>
+<span class="field-name">prompt_tokens</span>       <span class="field-type">integer</span>  <span class="field-note"># flat or nested under usage{}</span>
+<span class="field-name">completion_tokens</span>   <span class="field-type">integer</span>
+<span class="field-name">total_tokens</span>        <span class="field-type">integer</span>
+<span class="field-name">finish_reason</span>       <span class="field-type">string</span>   <span class="field-note"># stop | length | content_filter</span>
+<span class="field-name">cost_usd</span>            <span class="field-type">float</span>
+<span class="field-name">duration_seconds</span>    <span class="field-type">float</span>
+
+<span class="field-note"># JSON API format (usage nested):</span>
+<span class="field-type">{</span>
+  <span class="field-name">"usage"</span>: { <span class="field-name">"prompt_tokens"</span>: 100, <span class="field-name">"completion_tokens"</span>: 50 }
+<span class="field-type">}</span></pre>
+      </div>
+
+      <!-- Gemini -->
+      <div class="schema-content" id="tab-gemini">
+        <pre><span class="field-name">name</span>                   <span class="field-type">string</span>   <span class="field-note"># operation name / ID</span>
+<span class="field-name">create_time</span>            <span class="field-type">datetime</span> <span class="field-note"># ISO-8601 or Unix timestamp</span>
+<span class="field-name">model</span>                  <span class="field-type">string</span>   <span class="field-note"># e.g. gemini-1.5-pro</span>
+<span class="field-name">prompt_token_count</span>     <span class="field-type">integer</span>  <span class="field-note"># flat or in usageMetadata{}</span>
+<span class="field-name">candidates_token_count</span> <span class="field-type">integer</span>
+<span class="field-name">finish_reason</span>          <span class="field-type">string</span>   <span class="field-note"># STOP | SAFETY | RECITATION</span>
+<span class="field-name">safety_ratings</span>         <span class="field-type">string</span>   <span class="field-note"># used for detection only</span>
+<span class="field-name">cost_usd</span>               <span class="field-type">float</span>
+
+<span class="field-note"># JSON API format (usageMetadata nested):</span>
+<span class="field-type">{</span>
+  <span class="field-name">"usageMetadata"</span>: {
+    <span class="field-name">"promptTokenCount"</span>: 80,
+    <span class="field-name">"candidatesTokenCount"</span>: 40
+  }
+<span class="field-type">}</span></pre>
+      </div>
+
+      <!-- Generic JSON -->
+      <div class="schema-content" id="tab-json">
+        <pre><span class="field-note"># Supported JSON structures:</span>
+
+<span class="field-note"># 1. Array of records</span>
+<span class="field-type">[</span> { <span class="field-name">"input_tokens"</span>: 100, ... }, ... <span class="field-type">]</span>
+
+<span class="field-note"># 2. Object with "data" / "items" / "logs" / "records" key</span>
+<span class="field-type">{</span> <span class="field-name">"data"</span>: [ { ... }, ... ] <span class="field-type">}</span>
+
+<span class="field-note"># 3. Single record object</span>
+<span class="field-type">{</span> <span class="field-name">"input_tokens"</span>: 100, <span class="field-name">"output_tokens"</span>: 50, ... <span class="field-type">}</span>
+
+<span class="field-note"># Provider is auto-detected from field names;
+# use the Provider Override dropdown if detection fails.</span></pre>
+      </div>
+    </div>
+
+  </main>
+
+  <footer class="footer">
+    agent_dash &mdash; <a href="{{ url_for('index') }}">Back to Dashboard</a>
+  </footer>
+
+  <script>
+    // ------------------------------------------------------------------ //
+    // Drop zone drag-and-drop UX
+    // ------------------------------------------------------------------ //
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const fileLabel = document.getElementById('file-selected-label');
+    const submitBtn = document.getElementById('submit-btn');
+    const uploadProgress = document.getElementById('upload-progress');
+    const uploadForm = document.getElementById('upload-form');
+
+    function updateFileLabel(file) {
+      if (file) {
+        fileLabel.textContent = '\u2713 ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+      } else {
+        fileLabel.textContent = '';
+      }
+    }
+
+    fileInput.addEventListener('change', function () {
+      updateFileLabel(this.files[0] || null);
+    });
+
+    dropZone.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+    dropZone.addEventListener('dragleave', function () {
+      dropZone.classList.remove('drag-over');
+    });
+    dropZone.addEventListener('drop', function (e) {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        // Transfer to the real input
+        const dt = new DataTransfer();
+        dt.items.add(files[0]);
+        fileInput.files = dt.files;
+        updateFileLabel(files[0]);
+      }
+    });
+
+    uploadForm.addEventListener('submit', function () {
+      submitBtn.disabled = true;
+      uploadProgress.classList.add('visible');
+    });
+
+    // ------------------------------------------------------------------ //
+    // Schema tabs
+    // ------------------------------------------------------------------ //
+    document.querySelectorAll('.schema-tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        document.querySelectorAll('.schema-tab').forEach(function (t) {
+          t.classList.remove('active');
+        });
+        document.querySelectorAll('.schema-content').forEach(function (c) {
+          c.classList.remove('active');
+        });
+        tab.classList.add('active');
+        const targetId = 'tab-' + tab.getAttribute('data-tab');
+        const target = document.getElementById(targetId);
+        if (target) target.classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>

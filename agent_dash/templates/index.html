@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>agent_dash &ndash; AI Usage Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <style>
+    /* ------------------------------------------------------------------ */
+    /* Reset & base                                                         */
+    /* ------------------------------------------------------------------ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0f1117;
+      --surface:     #1a1d27;
+      --surface-2:   #232635;
+      --border:      #2e3149;
+      --text:        #e2e4f0;
+      --text-muted:  #8890b5;
+      --accent:      #6c7ff8;
+      --accent-2:    #a78bfa;
+      --green:       #34d399;
+      --red:         #f87171;
+      --yellow:      #fbbf24;
+      --claude:      #d97706;
+      --openai:      #10b981;
+      --gemini:      #3b82f6;
+      --radius:      10px;
+      --shadow:      0 2px 12px rgba(0,0,0,.45);
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ------------------------------------------------------------------ */
+    /* Layout                                                               */
+    /* ------------------------------------------------------------------ */
+    .app-wrapper {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      height: 56px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-logo {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.5px;
+    }
+    .header-logo span { color: var(--text-muted); font-weight: 400; }
+    .header-nav {
+      display: flex;
+      gap: 6px;
+      margin-left: auto;
+    }
+    .header-nav a, .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    .header-nav a:hover, .btn:hover { background: var(--border); text-decoration: none; }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: #5770f0; border-color: #5770f0; }
+
+    /* Poller badge */
+    .poller-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .poller-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+    .poller-dot.running {
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+      animation: pulse 1.8s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .4; }
+    }
+
+    /* Main content */
+    .main {
+      padding: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Filter bar                                                           */
+    /* ------------------------------------------------------------------ */
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-end;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      margin-bottom: 22px;
+    }
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .filter-group label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--text-muted);
+    }
+    .filter-group input,
+    .filter-group select {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 6px 10px;
+      font-size: 13px;
+      min-width: 160px;
+    }
+    .filter-group input:focus,
+    .filter-group select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .filter-actions { display: flex; gap: 8px; align-self: flex-end; }
+
+    /* Flash messages */
+    .flash-list { list-style: none; margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; }
+    .flash-msg {
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .flash-msg.success { background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.3); color: var(--green); }
+    .flash-msg.error   { background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); color: var(--red); }
+    .flash-msg.warning { background: rgba(251,191,36,.12);  border: 1px solid rgba(251,191,36,.3);  color: var(--yellow); }
+
+    /* ------------------------------------------------------------------ */
+    /* Summary cards                                                        */
+    /* ------------------------------------------------------------------ */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      box-shadow: var(--shadow);
+    }
+    .card-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--text-muted);
+    }
+    .card-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.1;
+    }
+    .card-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .card-value.green { color: var(--green); }
+    .card-value.red   { color: var(--red); }
+    .card-value.yellow { color: var(--yellow); }
+    .card-value.accent { color: var(--accent); }
+
+    /* ------------------------------------------------------------------ */
+    /* Chart grid                                                           */
+    /* ------------------------------------------------------------------ */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+    .chart-card.wide {
+      grid-column: 1 / -1;
+    }
+    .chart-card h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: 16px;
+    }
+    .chart-wrap {
+      position: relative;
+      height: 260px;
+    }
+    .chart-wrap.tall {
+      height: 320px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Concentration warnings                                              */
+    /* ------------------------------------------------------------------ */
+    .warnings-section { margin-bottom: 24px; }
+    .warning-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      background: rgba(251,191,36,.08);
+      border: 1px solid rgba(251,191,36,.25);
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .warning-icon { font-size: 16px; flex-shrink: 0; }
+    .warning-text { color: var(--yellow); }
+
+    /* ------------------------------------------------------------------ */
+    /* Provider breakdown table                                            */
+    /* ------------------------------------------------------------------ */
+    .table-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+      overflow-x: auto;
+    }
+    .table-card h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface-2); }
+    .provider-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .status-success { background: rgba(52,211,153,.15); color: var(--green); }
+    .status-error   { background: rgba(248,113,113,.15); color: var(--red); }
+    .status-cancelled { background: rgba(139,146,180,.15); color: var(--text-muted); }
+
+    /* Progress bar */
+    .progress-bar-wrap {
+      background: var(--surface-2);
+      border-radius: 4px;
+      height: 6px;
+      min-width: 80px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      background: var(--accent);
+      transition: width .3s;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Recent activity                                                      */
+    /* ------------------------------------------------------------------ */
+    .recent-section { margin-bottom: 24px; }
+
+    /* ------------------------------------------------------------------ */
+    /* Empty state                                                          */
+    /* ------------------------------------------------------------------ */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-muted);
+    }
+    .empty-state .empty-icon { font-size: 40px; margin-bottom: 12px; }
+    .empty-state p { font-size: 14px; }
+    .empty-state a { color: var(--accent); }
+
+    /* ------------------------------------------------------------------ */
+    /* Footer                                                               */
+    /* ------------------------------------------------------------------ */
+    .footer {
+      text-align: center;
+      padding: 18px;
+      font-size: 12px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+<div class="app-wrapper">
+
+  <!-- ================================================================ -->
+  <!-- Header                                                           -->
+  <!-- ================================================================ -->
+  <header class="header">
+    <div class="header-logo">agent<span>_dash</span></div>
+
+    <div class="poller-badge">
+      <span class="poller-dot{% if poller_status.running %} running{% endif %}"></span>
+      {% if poller_status.running %}
+        Live polling &middot; every {{ poller_status.interval_seconds }}s
+      {% else %}
+        Import mode
+      {% endif %}
+    </div>
+
+    <nav class="header-nav">
+      <a href="{{ url_for('upload') }}">&#8593; Import Logs</a>
+      <a href="{{ url_for('index') }}">&#9636; Dashboard</a>
+    </nav>
+  </header>
+
+  <!-- ================================================================ -->
+  <!-- Main content                                                      -->
+  <!-- ================================================================ -->
+  <main class="main">
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flash-list">
+          {% for category, message in messages %}
+            <li class="flash-msg {{ category }}">{{ message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <!-- ============================================================ -->
+    <!-- Filter bar                                                    -->
+    <!-- ============================================================ -->
+    <form method="GET" action="{{ url_for('index') }}" class="filter-bar">
+      <div class="filter-group">
+        <label for="since">From</label>
+        <input type="date" id="since" name="since" value="{{ since }}" />
+      </div>
+      <div class="filter-group">
+        <label for="until">To</label>
+        <input type="date" id="until" name="until" value="{{ until }}" />
+      </div>
+      <div class="filter-group">
+        <label for="provider">Provider</label>
+        <select id="provider" name="provider">
+          <option value="">All providers</option>
+          {% for p in providers %}
+            <option value="{{ p.name }}" {% if selected_provider == p.name %}selected{% endif %}>
+              {{ p.display_name }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button type="submit" class="btn btn-primary">Apply</button>
+        <a href="{{ url_for('index') }}" class="btn">Reset</a>
+      </div>
+    </form>
+
+    {% set ts = stats.token_spend %}
+    {% set cr = stats.completion_rates %}
+    {% set sv = stats.time_saved %}
+    {% set cn = stats.concentration %}
+    {% set td = stats.task_distribution %}
+    {% set dt = stats.daily_trend %}
+
+    {% if ts.total_tokens == 0 %}
+    <!-- ============================================================ -->
+    <!-- Empty state                                                   -->
+    <!-- ============================================================ -->
+    <div class="empty-state">
+      <div class="empty-icon">&#128202;</div>
+      <p>No usage data found for the selected filters.</p>
+      <p style="margin-top:8px;">Get started by <a href="{{ url_for('upload') }}">importing a log file</a>.</p>
+    </div>
+
+    {% else %}
+
+    <!-- ============================================================ -->
+    <!-- Summary cards                                                 -->
+    <!-- ============================================================ -->
+    <div class="cards-grid">
+      <div class="card">
+        <div class="card-label">Total Tokens</div>
+        <div class="card-value accent" id="card-total-tokens">{{ "{:,}".format(ts.total_tokens) }}</div>
+        <div class="card-sub">{{ "{:,}".format(ts.total_prompt_tokens) }} prompt &middot; {{ "{:,}".format(ts.total_completion_tokens) }} completion</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Est. Cost (USD)</div>
+        <div class="card-value" id="card-total-cost">${{ "%.4f"|format(ts.total_cost_usd) }}</div>
+        <div class="card-sub">across {{ ts.by_provider|length }} provider(s)</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Tasks</div>
+        <div class="card-value" id="card-total-tasks">{{ cr.total_tasks }}</div>
+        <div class="card-sub">{{ cr.success_count }} success &middot; {{ cr.error_count }} error &middot; {{ cr.cancelled_count }} cancelled</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Success Rate</div>
+        <div class="card-value green" id="card-success-rate">{{ "%.1f"|format(cr.success_rate * 100) }}%</div>
+        <div class="card-sub">{{ "%.1f"|format(cr.error_rate * 100) }}% error rate</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Time Saved</div>
+        <div class="card-value green" id="card-time-saved">{{ "%.1f"|format(sv.time_saved_hours) }}h</div>
+        <div class="card-sub">vs {{ sv.manual_effort_minutes_per_task|int }}m manual baseline / task</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Time Saved %</div>
+        <div class="card-value green" id="card-time-saved-pct">{{ "%.1f"|format(sv.time_saved_percent) }}%</div>
+        <div class="card-sub">{{ sv.successful_tasks }} successful tasks</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Dominant Provider</div>
+        <div class="card-value accent" style="font-size:20px;">{{ cn.dominant_provider or 'N/A' }}</div>
+        <div class="card-sub">HHI concentration: {{ "%.2f"|format(cn.hhi_cost) }}</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Active Days</div>
+        <div class="card-value" id="card-active-days">{{ dt.total_days }}</div>
+        <div class="card-sub">days with recorded activity</div>
+      </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Concentration warnings                                        -->
+    <!-- ============================================================ -->
+    {% if cn.concentration_warnings %}
+    <div class="warnings-section">
+      {% for w in cn.concentration_warnings %}
+      <div class="warning-item">
+        <span class="warning-icon">&#9888;</span>
+        <span class="warning-text">{{ w.message }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- ============================================================ -->
+    <!-- Charts                                                        -->
+    <!-- ============================================================ -->
+    <div class="charts-grid">
+
+      <!-- Token spend by provider (doughnut) -->
+      <div class="chart-card">
+        <h3>Token Spend by Provider</h3>
+        <div class="chart-wrap">
+          <canvas id="chartTokenSpend"></canvas>
+        </div>
+      </div>
+
+      <!-- Task completion rates (doughnut) -->
+      <div class="chart-card">
+        <h3>Task Completion Rates</h3>
+        <div class="chart-wrap">
+          <canvas id="chartCompletionRates"></canvas>
+        </div>
+      </div>
+
+      <!-- Task type distribution (bar) -->
+      <div class="chart-card">
+        <h3>Task Type Distribution</h3>
+        <div class="chart-wrap">
+          <canvas id="chartTaskTypes"></canvas>
+        </div>
+      </div>
+
+      <!-- Cost share by provider (bar) -->
+      <div class="chart-card">
+        <h3>Cost Share by Provider</h3>
+        <div class="chart-wrap">
+          <canvas id="chartCostShare"></canvas>
+        </div>
+      </div>
+
+      <!-- Daily token trend (line) -->
+      <div class="chart-card wide">
+        <h3>Daily Token Usage Trend</h3>
+        <div class="chart-wrap tall">
+          <canvas id="chartDailyTrend"></canvas>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Provider breakdown table                                      -->
+    <!-- ============================================================ -->
+    <div class="table-card">
+      <h3>Provider Breakdown</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Tasks</th>
+            <th>Tokens</th>
+            <th>Cost (USD)</th>
+            <th>Success Rate</th>
+            <th>Cost Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry in cn.by_provider %}
+          <tr>
+            <td>
+              <span class="provider-dot" style="background: var(--{{ entry.provider }})"></span>
+              {{ entry.display_name }}
+            </td>
+            <td>{{ entry.task_count }}</td>
+            <td>{{ "{:,}".format(entry.total_tokens) }}</td>
+            <td>${{ "%.4f"|format(entry.cost_usd) }}</td>
+            <td>
+              {% set p_rates = cr.by_provider | selectattr('provider', 'equalto', entry.provider) | list %}
+              {% if p_rates %}
+                {{ "%.1f"|format(p_rates[0].success_rate * 100) }}%
+              {% else %}
+                &mdash;
+              {% endif %}
+            </td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <div class="progress-bar-wrap" style="flex:1;">
+                  <div class="progress-bar-fill" style="width:{{ (entry.cost_share * 100)|round(1) }}%;background:var(--{{ entry.provider }})"></div>
+                </div>
+                <span style="white-space:nowrap;font-size:12px;">{{ "%.1f"|format(entry.cost_share * 100) }}%</span>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Recent activity table                                         -->
+    <!-- ============================================================ -->
+    <div class="recent-section">
+      <div class="table-card">
+        <h3>Recent Activity</h3>
+        <div id="recent-activity-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Provider</th>
+                <th>Model</th>
+                <th>Task Type</th>
+                <th>Tokens</th>
+                <th>Cost (USD)</th>
+                <th>Duration</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="recent-activity-body">
+              <!-- Populated by JavaScript -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    {% endif %} {# end if ts.total_tokens > 0 #}
+
+  </main>
+
+  <!-- ================================================================ -->
+  <!-- Footer                                                           -->
+  <!-- ================================================================ -->
+  <footer class="footer">
+    agent_dash &mdash; AI usage analytics &middot;
+    Generated {{ stats.generated_at[:19].replace('T', ' ') }} UTC &middot;
+    <a href="{{ url_for('upload') }}">Import Logs</a>
+  </footer>
+
+</div>
+
+<!-- Embed server-rendered data for JavaScript -->
+<script>
+  window.__AGENT_DASH_STATS__ = {{ stats_json | safe }};
+  window.__AGENT_DASH_FILTERS__ = {
+    since:    {{ (since or '') | tojson }},
+    until:    {{ (until or '') | tojson }},
+    provider: {{ (selected_provider or '') | tojson }},
+  };
+</script>
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>
