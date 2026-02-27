@@ -1,0 +1,63 @@
+# pyproject.toml - Project metadata and dependency declarations for agent_dash
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "agent_dash"
+version = "0.1.0"
+description = "A lightweight web dashboard aggregating API usage logs from multiple AI coding agent providers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "agent_dash contributors" }
+]
+keywords = ["dashboard", "ai", "agents", "analytics", "flask"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Flask",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+    "flask>=3.0",
+    "pandas>=2.1",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+]
+
+[project.scripts]
+agent-dash = "agent_dash.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_dash*"]
+
+[tool.setuptools.package-data]
+agent_dash = [
+    "templates/*.html",
+    "static/*.js",
+    "static/*.css",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["agent_dash"]
+omit = ["tests/*"]
